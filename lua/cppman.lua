@@ -173,7 +173,7 @@ local function create_man_popup(selection, selection_number)
 		focusable = true,
 		border = { style = "double", text = { top = "[cppman]" } },
 		position = "50%",
-		size = { width = "90%", height = "80%" },
+		size = { width = 80, height = "80%" },
 	})
 
 	state.current_popup = popup
