@@ -9,6 +9,7 @@ local state = {
 	current_page = nil,
 	current_popup = nil,
 	selection_popup = nil,
+	cache = {}, -- Added cache for cppman results
 }
 
 -- Utility functions
@@ -30,28 +31,43 @@ local function cleanup_popups()
 	safe_popup_close(state.current_popup)
 end
 
-local function execute_cppman_command(selection, selection_number)
-	-- Don't use fold command to allow dynamic resizing
-	local cmd = string.format("echo %d | cppman '%s' 2>&1", selection_number or 1, selection)
-
-	local handle = io.popen(cmd)
-	if not handle then
-		return { "Error running cppman" }
+-- Use vim.system for async command execution (Neovim 0.10+)
+local function execute_cppman_command_async(selection, selection_number, callback)
+	-- Check if result is cached
+	local cache_key = selection .. (selection_number and tostring(selection_number) or "")
+	if state.cache[cache_key] then
+		callback(state.cache[cache_key])
+		return
 	end
 
-	local result = handle:read("*a")
-	handle:close()
+	local cmd = { "cppman", selection }
+	if selection_number then
+		cmd = { "sh", "-c", string.format("echo %d | cppman '%s' 2>&1", selection_number, selection) }
+	end
 
-	local lines = {}
-	for line in result:gmatch("[^\r\n]+") do
-		if line:find("Please enter the selection:") then
-			lines = {}
-		else
-			table.insert(lines, line)
+	vim.system(cmd, { text = true }, function(obj)
+		if obj.code ~= 0 then
+			callback({ "Error running cppman: " .. (obj.stderr or "unknown error") })
+			return
 		end
-	end
 
-	return #lines > 0 and lines or { "No output from cppman" }
+		local result = obj.stdout
+		local lines = {}
+		for line in result:gmatch("[^\r\n]+") do
+			if line:find("Please enter the selection:") then
+				lines = {}
+			else
+				table.insert(lines, line)
+			end
+		end
+
+		-- Cache the result
+		if #lines > 0 then
+			state.cache[cache_key] = lines
+		end
+
+		callback(#lines > 0 and lines or { "No output from cppman" })
+	end)
 end
 
 -- Buffer configuration functions
@@ -82,12 +98,18 @@ local function configure_selection_buffer(bufnr, winid)
 end
 
 -- Content population functions
-local function populate_man_page(bufnr, winid, selection, selection_number)
-	local lines = execute_cppman_command(selection, selection_number)
+local function populate_man_page_async(bufnr, winid, selection, selection_number)
+	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { "Loading..." })
 
-	vim.bo[bufnr].modifiable = true
-	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-	configure_cppman_buffer(bufnr, winid)
+	execute_cppman_command_async(selection, selection_number, function(lines)
+		vim.schedule(function()
+			if vim.api.nvim_buf_is_valid(bufnr) then
+				vim.bo[bufnr].modifiable = true
+				vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+				configure_cppman_buffer(bufnr, winid)
+			end
+		end)
+	end)
 end
 
 local function populate_selection_options(bufnr, options, word_to_search)
@@ -118,29 +140,37 @@ local function navigate_back()
 	M.open_cppman_for(state.current_page)
 end
 
--- Option parsing
-local function parse_cppman_options(word_to_search)
-	local handle = io.popen("cppman '" .. word_to_search .. "' 2>&1")
-	if not handle then
-		return {}
+-- Option parsing with caching
+local function parse_cppman_options_async(word_to_search, callback)
+	-- Check cache first
+	if state.cache["options_" .. word_to_search] then
+		callback(state.cache["options_" .. word_to_search])
+		return
 	end
 
-	local result = handle:read("*a")
-	handle:close()
-
-	local options = {}
-	for line in result:gmatch("[^\r\n]+") do
-		if line:match("^%d+%.") then
-			local num, desc = line:match("^(%d+)%.%s*(.*)")
-			table.insert(options, {
-				num = tonumber(num),
-				text = desc,
-				value = desc:match("^[^ ]+") or desc,
-			})
+	vim.system({ "cppman", word_to_search }, { text = true }, function(obj)
+		if obj.code ~= 0 then
+			callback({})
+			return
 		end
-	end
 
-	return options
+		local result = obj.stdout
+		local options = {}
+		for line in result:gmatch("[^\r\n]+") do
+			if line:match("^%d+%.") then
+				local num, desc = line:match("^(%d+)%.%s*(.*)")
+				table.insert(options, {
+					num = tonumber(num),
+					text = desc,
+					value = desc:match("^[^ ]+") or desc,
+				})
+			end
+		end
+
+		-- Cache the options
+		state.cache["options_" .. word_to_search] = options
+		callback(options)
+	end)
 end
 
 -- Popup creation functions
@@ -177,9 +207,7 @@ local function create_man_popup(selection, selection_number)
 	})
 
 	state.current_popup = popup
-
-	-- Remove the fold command and enable wrapping for dynamic resizing
-	populate_man_page(popup.bufnr, popup.winid, selection, selection_number)
+	populate_man_page_async(popup.bufnr, popup.winid, selection, selection_number)
 	setup_man_popup_keymaps(popup)
 
 	return popup
@@ -284,13 +312,16 @@ end
 
 M.open_cppman_for = function(word_to_search)
 	cleanup_popups()
-	local options = parse_cppman_options(word_to_search)
 
-	if #options == 0 then
-		create_man_popup(word_to_search)
-	else
-		create_selection_popup(options, word_to_search)
-	end
+	parse_cppman_options_async(word_to_search, function(options)
+		vim.schedule(function()
+			if #options == 0 then
+				create_man_popup(word_to_search)
+			else
+				create_selection_popup(options, word_to_search)
+			end
+		end)
+	end)
 end
 
 return M
