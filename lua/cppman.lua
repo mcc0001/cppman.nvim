@@ -34,7 +34,7 @@ local function run_cppman(manwidth, selection, selection_number)
 end
 
 -- Configure buffer options for cppman content
-local function configure_cppman_buffer(bufnr)
+local function configure_cppman_buffer(bufnr, winid)
 	local bo = vim.bo[bufnr]
 	bo.buftype = "nofile"
 	bo.bufhidden = "wipe"
@@ -44,21 +44,39 @@ local function configure_cppman_buffer(bufnr)
 	bo.filetype = "cppman"
 	bo.keywordprg = "cppman"
 
-	local wo = vim.wo
-	wo.wrap = false
-	wo.linebreak = true
-	wo.signcolumn = "no"
-	wo.number = false
-	wo.relativenumber = false
+	-- Set window options specifically for the popup window
+	vim.api.nvim_win_set_option(winid, "wrap", false)
+	vim.api.nvim_win_set_option(winid, "linebreak", true)
+	vim.api.nvim_win_set_option(winid, "signcolumn", "no")
+	vim.api.nvim_win_set_option(winid, "number", false)
+	vim.api.nvim_win_set_option(winid, "relativenumber", false)
+end
+
+-- Configure selection popup buffer
+local function configure_selection_buffer(bufnr, winid)
+	local bo = vim.bo[bufnr]
+	bo.buftype = "nofile"
+	bo.bufhidden = "wipe"
+	bo.swapfile = false
+	bo.modifiable = false
+	bo.readonly = true
+	bo.filetype = "cppman-select"
+
+	-- Set window options specifically for the selection popup window
+	vim.api.nvim_win_set_option(winid, "wrap", false)
+	vim.api.nvim_win_set_option(winid, "linebreak", true)
+	vim.api.nvim_win_set_option(winid, "signcolumn", "no")
+	vim.api.nvim_win_set_option(winid, "number", false)
+	vim.api.nvim_win_set_option(winid, "relativenumber", false)
 end
 
 -- Render cppman output into buffer
-local function show_man_page(bufnr, manwidth, selection, selection_number)
+local function show_man_page(bufnr, winid, manwidth, selection, selection_number)
 	local lines = run_cppman(manwidth, selection, selection_number)
 
 	vim.bo[bufnr].modifiable = true
 	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-	configure_cppman_buffer(bufnr)
+	configure_cppman_buffer(bufnr, winid)
 end
 
 -- Navigation functions
@@ -108,7 +126,12 @@ local function safe_popup_close(popup)
 	if popup and pcall(function()
 		popup:unmount()
 	end) then
-		popup = nil
+		if popup == state.current_popup then
+			state.current_popup = nil
+		end
+		if popup == state.selection_popup then
+			state.selection_popup = nil
+		end
 	end
 end
 
@@ -134,24 +157,26 @@ local function create_man_popup(selection, selection_number)
 		local manwidth = math.max(40, win_width - 4)
 
 		vim.api.nvim_buf_set_lines(popup.bufnr, 0, -1, false, {})
-		show_man_page(popup.bufnr, manwidth, selection, selection_number)
+		show_man_page(popup.bufnr, popup.winid, manwidth, selection, selection_number)
 	end
 
 	refresh_cppman()
 	popup:on("WinResized", refresh_cppman)
 
 	-- Setup popup keymaps
-	vim.keymap.set("n", "q", ":q!<cr>", { silent = true, buffer = popup.bufnr, nowait = true })
+	vim.keymap.set("n", "q", function()
+		safe_popup_close(state.current_popup)
+	end, { silent = true, buffer = popup.bufnr, nowait = true })
+
+	vim.keymap.set("n", "<ESC>", function()
+		safe_popup_close(state.current_popup)
+	end, { silent = true, buffer = popup.bufnr, nowait = true })
+
 	vim.keymap.set("n", "K", load_new_page, { silent = true, buffer = popup.bufnr })
 	vim.keymap.set("n", "<C-]>", load_new_page, { silent = true, buffer = popup.bufnr })
 	vim.keymap.set("n", "<2-LeftMouse>", load_new_page, { silent = true, buffer = popup.bufnr })
 	vim.keymap.set("n", "<C-o>", back_to_prev_page, { silent = true, buffer = popup.bufnr })
 	vim.keymap.set("n", "<RightMouse>", back_to_prev_page, { silent = true, buffer = popup.bufnr })
-
-	popup:on(event.BufLeave, function()
-		popup:unmount()
-		state.current_popup = nil
-	end)
 
 	return popup
 end
@@ -177,6 +202,7 @@ local function create_selection_popup(options, word_to_search)
 	table.insert(lines, "Enter selection number (1-" .. #options .. "):")
 
 	vim.api.nvim_buf_set_lines(selection_popup.bufnr, 0, -1, false, lines)
+	configure_selection_buffer(selection_popup.bufnr, selection_popup.winid)
 
 	local function handle_selection()
 		local line = vim.api.nvim_get_current_line()
@@ -200,6 +226,11 @@ local function create_selection_popup(options, word_to_search)
 	vim.keymap.set("n", "<ESC>", function()
 		safe_popup_close(state.selection_popup)
 	end, { silent = true, buffer = selection_popup.bufnr })
+
+	-- Disable navigation keys in selection popup
+	vim.keymap.set("n", "<C-o>", function() end, { silent = true, buffer = selection_popup.bufnr })
+	vim.keymap.set("n", "K", function() end, { silent = true, buffer = selection_popup.bufnr })
+	vim.keymap.set("n", "<C-]>", function() end, { silent = true, buffer = selection_popup.bufnr })
 
 	vim.api.nvim_win_set_cursor(selection_popup.winid, { 1, 0 })
 end
@@ -238,8 +269,12 @@ M.input = function()
 		input:unmount()
 	end)
 
-	vim.keymap.set("n", "q", ":q!<cr>", { silent = true, buffer = true })
-	vim.keymap.set("n", "<ESC>", ":q!<cr>", { silent = true, buffer = true })
+	vim.keymap.set("n", "q", function()
+		input:unmount()
+	end, { silent = true, buffer = true })
+	vim.keymap.set("n", "<ESC>", function()
+		input:unmount()
+	end, { silent = true, buffer = true })
 end
 
 M.open_cppman_for = function(word_to_search)
