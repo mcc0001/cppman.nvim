@@ -30,9 +30,6 @@ local function get_cppman_options(word_to_search)
 end
 
 local function show_man_page(manwidth, selection, selection_number)
-	if current_page ~= nil then
-		table.insert(stack, current_page)
-	end
 	selection_number = selection_number or nil
 	vim.bo.ro = false
 	vim.bo.ma = true
@@ -76,7 +73,7 @@ local function loadNewPage()
 	local manwidth = wininfo.width - 4 -- Account for border characters
 
 	-- show_man_page(manwidth, current_page)
-	show_man_page(manwidth, current_page)
+	M.open_cppman_for(current_page)
 end
 
 local function backToPrevPage()
@@ -90,7 +87,7 @@ local function backToPrevPage()
 	local manwidth = wininfo.width - 4 -- Account for border characters
 	--
 	-- show_man_page(manwidth, current_page)
-	show_man_page(manwidth, current_page)
+	M.open_cppman_for(current_page)
 end
 
 M.setup = function()
@@ -269,7 +266,7 @@ M.open_cppman_for = function(word_to_search)
 	end, { silent = true, buffer = selection_popup.bufnr })
 
 	-- Move cursor to the input line
-	vim.api.nvim_win_set_cursor(selection_popup.winid, { #lines, 0 })
+	vim.api.nvim_win_set_cursor(selection_popup.winid, { 1, 0 })
 end
 
 return M
