@@ -30,6 +30,9 @@ local function get_cppman_options(word_to_search)
 end
 
 local function show_man_page(manwidth, selection, selection_number)
+	if current_page ~= nil then
+		table.insert(stack, current_page)
+	end
 	selection_number = selection_number or nil
 	vim.bo.ro = false
 	vim.bo.ma = true
@@ -41,7 +44,7 @@ local function show_man_page(manwidth, selection, selection_number)
 	if selection_number then
 		cmd = string.format([[ 0r! echo %d | cppman --force-columns %d '%s' ]], selection_number, manwidth, selection)
 	else
-		cmd = string.format([[ 0r!  cppman --force-columns %d '%s' ]], manwidth, selection)
+		cmd = string.format([[ 0r! echo 1 |  cppman --force-columns %d '%s' ]], manwidth, selection)
 	end
 	vim.cmd(cmd)
 
@@ -72,6 +75,7 @@ local function loadNewPage()
 	local wininfo = vim.fn.getwininfo(vim.fn.win_getid())[1]
 	local manwidth = wininfo.width - 4 -- Account for border characters
 
+	-- show_man_page(manwidth, current_page)
 	show_man_page(manwidth, current_page)
 end
 
@@ -84,7 +88,8 @@ local function backToPrevPage()
 
 	local wininfo = vim.fn.getwininfo(vim.fn.win_getid())[1]
 	local manwidth = wininfo.width - 4 -- Account for border characters
-
+	--
+	-- show_man_page(manwidth, current_page)
 	show_man_page(manwidth, current_page)
 end
 
@@ -144,7 +149,12 @@ M.open_cppman_for = function(word_to_search)
 	local options = get_cppman_options(word_to_search)
 
 	if #options == 0 then
-		vim.notify("No cppman results found for: " .. word_to_search, vim.log.levels.WARN)
+		-- vim.notify("No cppman results found for: " .. word_to_search, vim.log.levels.WARN)
+		-- directly show to result if there is no options
+		local wininfo = vim.fn.getwininfo(vim.fn.win_getid())[1]
+		local manwidth = wininfo.width - 4 -- Account for border characters
+		show_man_page(manwidth, word_to_search)
+
 		return
 	end
 
@@ -242,7 +252,7 @@ M.open_cppman_for = function(word_to_search)
 			vim.keymap.set("n", "<C-]>", loadNewPage, { silent = true, buffer = true })
 			vim.keymap.set("n", "<2-LeftMouse>", loadNewPage, { silent = true, buffer = true })
 
-			vim.keymap.set("n", "<C-T>", backToPrevPage, { silent = true, buffer = true })
+			vim.keymap.set("n", "<C-o>", backToPrevPage, { silent = true, buffer = true })
 			vim.keymap.set("n", "<RightMouse>", backToPrevPage, { silent = true, buffer = true })
 		else
 			vim.notify("Invalid selection. Please enter a number between 1 and " .. #options, vim.log.levels.ERROR)
