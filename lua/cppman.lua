@@ -4,14 +4,6 @@ local Popup = require("nui.popup")
 
 local M = {}
 
-local function tablelength(T)
-	local count = 0
-	for _ in pairs(T) do
-		count = count + 1
-	end
-	return count
-end
-
 local stack = {}
 local current_page = nil
 
@@ -37,14 +29,20 @@ local function get_cppman_options(word_to_search)
 	return options
 end
 
-local function show_man_page(manwidth, selection)
+local function show_man_page(manwidth, selection, selection_number)
+	selection_number = selection_number or nil
 	vim.bo.ro = false
 	vim.bo.ma = true
 
 	vim.api.nvim_buf_set_lines(0, 0, -1, true, {})
 
+	local cmd
 	-- Show the selected man page
-	local cmd = string.format([[ 0r! cppman --force-columns %d '%s' ]], manwidth, selection)
+	if selection_number then
+		cmd = string.format([[ 0r! echo %d | cppman --force-columns %d '%s' ]], selection_number, manwidth, selection)
+	else
+		cmd = string.format([[ 0r!  cppman --force-columns %d '%s' ]], manwidth, selection)
+	end
 	vim.cmd(cmd)
 
 	vim.cmd("0") -- Go to top of document
@@ -230,7 +228,7 @@ M.open_cppman_for = function(word_to_search)
 			local wininfo = vim.fn.getwininfo(popup.winid)[1]
 			local manwidth = wininfo.width - 4 -- Account for border characters
 
-			show_man_page(manwidth, selected_option.value)
+			show_man_page(manwidth, word_to_search, selection_num)
 			current_page = selected_option.value
 
 			-- unmount component when cursor leaves buffer
