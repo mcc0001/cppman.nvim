@@ -25,8 +25,13 @@ local function run_cppman(manwidth, selection, selection_number)
 	local result = handle:read("*a")
 	handle:close()
 
+	local removeString = "Please enter the selection:"
 	local lines = {}
 	for line in result:gmatch("[^\r\n]+") do
+		if string.find(line, removeString) then
+			lines = {}
+			line = string.gsub(line, removeString, "")
+		end
 		table.insert(lines, line)
 	end
 
@@ -203,6 +208,10 @@ local function create_selection_popup(options, word_to_search)
 
 	vim.api.nvim_buf_set_lines(selection_popup.bufnr, 0, -1, false, lines)
 	configure_selection_buffer(selection_popup.bufnr, selection_popup.winid)
+
+	-- Enable line highlighting and hide cursor
+	vim.api.nvim_win_set_option(selection_popup.winid, "cursorline", true)
+	vim.api.nvim_win_set_option(selection_popup.winid, "cursorlineopt", "line")
 
 	local function handle_selection()
 		local line = vim.api.nvim_get_current_line()
