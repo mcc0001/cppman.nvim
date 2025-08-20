@@ -11,11 +11,28 @@ local state = {
 	selection_popup = nil,
 }
 
--- Safe execution of cppman command with proper output handling
-local function run_cppman(manwidth, selection, selection_number)
-	local safe_width = math.max(40, manwidth or 80)
-	local cmd =
-		string.format("echo %d | cppman '%s' 2>&1 | fold -s -w %d", selection_number or 1, selection, safe_width)
+-- Utility functions
+local function safe_popup_close(popup)
+	if popup and pcall(function()
+		popup:unmount()
+	end) then
+		if popup == state.current_popup then
+			state.current_popup = nil
+		end
+		if popup == state.selection_popup then
+			state.selection_popup = nil
+		end
+	end
+end
+
+local function cleanup_popups()
+	safe_popup_close(state.selection_popup)
+	safe_popup_close(state.current_popup)
+end
+
+local function execute_cppman_command(selection, selection_number)
+	-- Don't use fold command to allow dynamic resizing
+	local cmd = string.format("echo %d | cppman '%s' 2>&1", selection_number or 1, selection)
 
 	local handle = io.popen(cmd)
 	if not handle then
@@ -25,67 +42,67 @@ local function run_cppman(manwidth, selection, selection_number)
 	local result = handle:read("*a")
 	handle:close()
 
-	local removeString = "Please enter the selection:"
 	local lines = {}
 	for line in result:gmatch("[^\r\n]+") do
-		if string.find(line, removeString) then
+		if line:find("Please enter the selection:") then
 			lines = {}
-			line = string.gsub(line, removeString, "")
+		else
+			table.insert(lines, line)
 		end
-		table.insert(lines, line)
 	end
 
 	return #lines > 0 and lines or { "No output from cppman" }
 end
 
--- Configure buffer options for cppman content
+-- Buffer configuration functions
+local function configure_buffer(bufnr, winid, filetype, is_modifiable)
+	local bo = vim.bo[bufnr]
+	bo.buftype = "nofile"
+	bo.bufhidden = "wipe"
+	bo.swapfile = false
+	bo.modifiable = is_modifiable
+	bo.readonly = not is_modifiable
+	bo.filetype = filetype
+
+	-- Enable wrapping for dynamic resizing
+	vim.api.nvim_win_set_option(winid, "wrap", true)
+	vim.api.nvim_win_set_option(winid, "linebreak", true)
+	vim.api.nvim_win_set_option(winid, "signcolumn", "no")
+	vim.api.nvim_win_set_option(winid, "number", false)
+	vim.api.nvim_win_set_option(winid, "relativenumber", false)
+end
+
 local function configure_cppman_buffer(bufnr, winid)
-	local bo = vim.bo[bufnr]
-	bo.buftype = "nofile"
-	bo.bufhidden = "wipe"
-	bo.swapfile = false
-	bo.modifiable = false
-	bo.readonly = true
-	bo.filetype = "cppman"
-	bo.keywordprg = "cppman"
-
-	-- Set window options specifically for the popup window
-	vim.api.nvim_win_set_option(winid, "wrap", false)
-	vim.api.nvim_win_set_option(winid, "linebreak", true)
-	vim.api.nvim_win_set_option(winid, "signcolumn", "no")
-	vim.api.nvim_win_set_option(winid, "number", false)
-	vim.api.nvim_win_set_option(winid, "relativenumber", false)
+	configure_buffer(bufnr, winid, "cppman", false)
+	vim.bo[bufnr].keywordprg = "cppman"
 end
 
--- Configure selection popup buffer
 local function configure_selection_buffer(bufnr, winid)
-	local bo = vim.bo[bufnr]
-	bo.buftype = "nofile"
-	bo.bufhidden = "wipe"
-	bo.swapfile = false
-	bo.modifiable = false
-	bo.readonly = true
-	bo.filetype = "cppman-select"
-
-	-- Set window options specifically for the selection popup window
-	vim.api.nvim_win_set_option(winid, "wrap", false)
-	vim.api.nvim_win_set_option(winid, "linebreak", true)
-	vim.api.nvim_win_set_option(winid, "signcolumn", "no")
-	vim.api.nvim_win_set_option(winid, "number", false)
-	vim.api.nvim_win_set_option(winid, "relativenumber", false)
+	configure_buffer(bufnr, winid, "cppman-select", false)
 end
 
--- Render cppman output into buffer
-local function show_man_page(bufnr, winid, manwidth, selection, selection_number)
-	local lines = run_cppman(manwidth, selection, selection_number)
+-- Content population functions
+local function populate_man_page(bufnr, winid, selection, selection_number)
+	local lines = execute_cppman_command(selection, selection_number)
 
 	vim.bo[bufnr].modifiable = true
 	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 	configure_cppman_buffer(bufnr, winid)
 end
 
+local function populate_selection_options(bufnr, options, word_to_search)
+	local lines = {}
+	for _, opt in ipairs(options) do
+		table.insert(lines, string.format("%2d. %s", opt.num, opt.text))
+	end
+	table.insert(lines, "")
+	table.insert(lines, "Enter selection number (1-" .. #options .. "):")
+
+	vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+end
+
 -- Navigation functions
-local function load_new_page()
+local function navigate_to_new_page()
 	if state.current_page and state.current_popup then
 		table.insert(state.stack, state.current_page)
 	end
@@ -93,7 +110,7 @@ local function load_new_page()
 	M.open_cppman_for(state.current_page)
 end
 
-local function back_to_prev_page()
+local function navigate_back()
 	if #state.stack == 0 then
 		return
 	end
@@ -101,7 +118,7 @@ local function back_to_prev_page()
 	M.open_cppman_for(state.current_page)
 end
 
--- Parse cppman options from command output
+-- Option parsing
 local function parse_cppman_options(word_to_search)
 	local handle = io.popen("cppman '" .. word_to_search .. "' 2>&1")
 	if not handle then
@@ -126,23 +143,32 @@ local function parse_cppman_options(word_to_search)
 	return options
 end
 
--- Close popup safely
-local function safe_popup_close(popup)
-	if popup and pcall(function()
-		popup:unmount()
-	end) then
-		if popup == state.current_popup then
-			state.current_popup = nil
-		end
-		if popup == state.selection_popup then
-			state.selection_popup = nil
-		end
-	end
+-- Popup creation functions
+local function create_popup(options)
+	local popup = Popup(options)
+	popup:mount()
+	return popup
 end
 
--- Create and configure man page popup
+local function setup_man_popup_keymaps(popup)
+	local bufnr = popup.bufnr
+	local opts = { silent = true, buffer = bufnr, nowait = true }
+
+	vim.keymap.set("n", "q", function()
+		safe_popup_close(popup)
+	end, opts)
+	vim.keymap.set("n", "<ESC>", function()
+		safe_popup_close(popup)
+	end, opts)
+	vim.keymap.set("n", "K", navigate_to_new_page, opts)
+	vim.keymap.set("n", "<C-]>", navigate_to_new_page, opts)
+	vim.keymap.set("n", "<2-LeftMouse>", navigate_to_new_page, opts)
+	vim.keymap.set("n", "<C-o>", navigate_back, opts)
+	vim.keymap.set("n", "<RightMouse>", navigate_back, opts)
+end
+
 local function create_man_popup(selection, selection_number)
-	local popup = Popup({
+	local popup = create_popup({
 		enter = true,
 		focusable = true,
 		border = { style = "double", text = { top = "[cppman]" } },
@@ -150,68 +176,18 @@ local function create_man_popup(selection, selection_number)
 		size = { width = "90%", height = "80%" },
 	})
 
-	popup:mount()
 	state.current_popup = popup
 
-	local function refresh_cppman()
-		if not vim.api.nvim_win_is_valid(popup.winid) then
-			return
-		end
-
-		local win_width = vim.api.nvim_win_get_width(popup.winid)
-		local manwidth = math.max(40, win_width - 4)
-
-		vim.api.nvim_buf_set_lines(popup.bufnr, 0, -1, false, {})
-		show_man_page(popup.bufnr, popup.winid, manwidth, selection, selection_number)
-	end
-
-	refresh_cppman()
-	popup:on("WinResized", refresh_cppman)
-
-	-- Setup popup keymaps
-	vim.keymap.set("n", "q", function()
-		safe_popup_close(state.current_popup)
-	end, { silent = true, buffer = popup.bufnr, nowait = true })
-
-	vim.keymap.set("n", "<ESC>", function()
-		safe_popup_close(state.current_popup)
-	end, { silent = true, buffer = popup.bufnr, nowait = true })
-
-	vim.keymap.set("n", "K", load_new_page, { silent = true, buffer = popup.bufnr })
-	vim.keymap.set("n", "<C-]>", load_new_page, { silent = true, buffer = popup.bufnr })
-	vim.keymap.set("n", "<2-LeftMouse>", load_new_page, { silent = true, buffer = popup.bufnr })
-	vim.keymap.set("n", "<C-o>", back_to_prev_page, { silent = true, buffer = popup.bufnr })
-	vim.keymap.set("n", "<RightMouse>", back_to_prev_page, { silent = true, buffer = popup.bufnr })
+	-- Remove the fold command and enable wrapping for dynamic resizing
+	populate_man_page(popup.bufnr, popup.winid, selection, selection_number)
+	setup_man_popup_keymaps(popup)
 
 	return popup
 end
 
--- Create selection popup
-local function create_selection_popup(options, word_to_search)
-	local selection_popup = Popup({
-		enter = true,
-		focusable = true,
-		border = { style = "double", text = { top = "[Select cppman entry]" } },
-		position = "50%",
-		size = { width = 80, height = math.min(20, #options + 2) },
-	})
-
-	selection_popup:mount()
-	state.selection_popup = selection_popup
-
-	local lines = {}
-	for _, opt in ipairs(options) do
-		table.insert(lines, string.format("%2d. %s", opt.num, opt.text))
-	end
-	table.insert(lines, "")
-	table.insert(lines, "Enter selection number (1-" .. #options .. "):")
-
-	vim.api.nvim_buf_set_lines(selection_popup.bufnr, 0, -1, false, lines)
-	configure_selection_buffer(selection_popup.bufnr, selection_popup.winid)
-
-	-- Enable line highlighting and hide cursor
-	vim.api.nvim_win_set_option(selection_popup.winid, "cursorline", true)
-	vim.api.nvim_win_set_option(selection_popup.winid, "cursorlineopt", "line")
+local function setup_selection_popup_keymaps(popup, options, word_to_search)
+	local bufnr = popup.bufnr
+	local opts = { silent = true, buffer = bufnr }
 
 	local function handle_selection()
 		local line = vim.api.nvim_get_current_line()
@@ -222,28 +198,47 @@ local function create_selection_popup(options, word_to_search)
 			return
 		end
 
-		safe_popup_close(state.selection_popup)
+		safe_popup_close(popup)
 		create_man_popup(word_to_search, selection_num)
 		state.current_page = options[selection_num].value
 	end
 
-	-- Selection popup keymaps
-	vim.keymap.set("n", "<CR>", handle_selection, { silent = true, buffer = selection_popup.bufnr })
+	vim.keymap.set("n", "<CR>", handle_selection, opts)
 	vim.keymap.set("n", "q", function()
-		safe_popup_close(state.selection_popup)
-	end, { silent = true, buffer = selection_popup.bufnr })
+		safe_popup_close(popup)
+	end, opts)
 	vim.keymap.set("n", "<ESC>", function()
-		safe_popup_close(state.selection_popup)
-	end, { silent = true, buffer = selection_popup.bufnr })
+		safe_popup_close(popup)
+	end, opts)
 
 	-- Disable navigation keys in selection popup
-	vim.keymap.set("n", "<C-o>", function() end, { silent = true, buffer = selection_popup.bufnr })
-	vim.keymap.set("n", "K", function() end, { silent = true, buffer = selection_popup.bufnr })
-	vim.keymap.set("n", "<C-]>", function() end, { silent = true, buffer = selection_popup.bufnr })
-
-	vim.api.nvim_win_set_cursor(selection_popup.winid, { 1, 0 })
+	vim.keymap.set("n", "<C-o>", function() end, opts)
+	vim.keymap.set("n", "K", function() end, opts)
+	vim.keymap.set("n", "<C-]>", function() end, opts)
 end
 
+local function create_selection_popup(options, word_to_search)
+	local popup = create_popup({
+		enter = true,
+		focusable = true,
+		border = { style = "double", text = { top = "[Select cppman entry]" } },
+		position = "50%",
+		size = { width = 80, height = math.min(20, #options + 2) },
+	})
+
+	state.selection_popup = popup
+	populate_selection_options(popup.bufnr, options, word_to_search)
+	configure_selection_buffer(popup.bufnr, popup.winid)
+
+	vim.api.nvim_win_set_option(popup.winid, "cursorline", true)
+	vim.api.nvim_win_set_option(popup.winid, "cursorlineopt", "line")
+	setup_selection_popup_keymaps(popup, options, word_to_search)
+	vim.api.nvim_win_set_cursor(popup.winid, { 1, 0 })
+
+	return popup
+end
+
+-- Public API
 M.setup = function()
 	vim.api.nvim_create_user_command("CPPMan", function(args)
 		if args.args and #args.args > 1 then
@@ -278,6 +273,7 @@ M.input = function()
 		input:unmount()
 	end)
 
+	-- Set up input keymaps directly
 	vim.keymap.set("n", "q", function()
 		input:unmount()
 	end, { silent = true, buffer = true })
@@ -287,18 +283,14 @@ M.input = function()
 end
 
 M.open_cppman_for = function(word_to_search)
-	-- Clean up existing popups
-	safe_popup_close(state.selection_popup)
-	safe_popup_close(state.current_popup)
-
+	cleanup_popups()
 	local options = parse_cppman_options(word_to_search)
 
 	if #options == 0 then
 		create_man_popup(word_to_search)
-		return
+	else
+		create_selection_popup(options, word_to_search)
 	end
-
-	create_selection_popup(options, word_to_search)
 end
 
 return M
