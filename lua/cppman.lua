@@ -9,10 +9,11 @@ local current_page = nil
 local current_popup = nil
 local selection_popup_ref = nil
 
--- Run cppman safely and capture output as lines
+-- Run cppman safely and capture output as lines, wrapped to width
 local function run_cppman(manwidth, selection, selection_number)
 	local num = selection_number or 1
-	local cmd = string.format("echo %d | cppman --force-columns %d '%s' 2>&1", num, manwidth, selection)
+	local safe_width = math.max(40, tonumber(manwidth) or 80)
+	local cmd = string.format("echo %d | cppman '%s' 2>&1 | fold -s -w %d", num, selection, safe_width)
 
 	local handle = io.popen(cmd)
 	if not handle then
@@ -26,7 +27,7 @@ local function run_cppman(manwidth, selection, selection_number)
 	for line in result:gmatch("[^\r\n]+") do
 		table.insert(lines, line)
 	end
-	return lines
+	return #lines > 0 and lines or { "No output from cppman" }
 end
 
 -- Render cppman output into buffer
@@ -155,9 +156,18 @@ M.open_cppman_for = function(word_to_search)
 		popup:mount()
 		current_popup = popup
 
-		local wininfo = vim.fn.getwininfo(popup.winid)[1]
-		local manwidth = wininfo.width - 4
-		show_man_page(popup.bufnr, manwidth, word_to_search)
+		local function refresh_cppman()
+			if not vim.api.nvim_win_is_valid(popup.winid) then
+				return
+			end
+			local win_width = vim.api.nvim_win_get_width(popup.winid)
+			local manwidth = math.max(40, win_width - 4)
+			vim.api.nvim_buf_set_lines(popup.bufnr, 0, -1, false, {})
+			show_man_page(popup.bufnr, manwidth, word_to_search)
+		end
+
+		refresh_cppman()
+		popup:on("WinResized", refresh_cppman)
 		return
 	end
 
@@ -202,9 +212,19 @@ M.open_cppman_for = function(word_to_search)
 		popup:mount()
 		current_popup = popup
 
-		local wininfo = vim.fn.getwininfo(popup.winid)[1]
-		local manwidth = wininfo.width - 4
-		show_man_page(popup.bufnr, manwidth, word_to_search, selection_num)
+		local function refresh_cppman()
+			if not vim.api.nvim_win_is_valid(popup.winid) then
+				return
+			end
+			local win_width = vim.api.nvim_win_get_width(popup.winid)
+			local manwidth = math.max(40, win_width - 4)
+			vim.api.nvim_buf_set_lines(popup.bufnr, 0, -1, false, {})
+			show_man_page(popup.bufnr, manwidth, word_to_search, selection_num)
+		end
+
+		refresh_cppman()
+		popup:on("WinResized", refresh_cppman)
+
 		current_page = selected_option.value
 
 		popup:on(event.BufLeave, function()
